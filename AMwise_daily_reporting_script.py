@@ -2,48 +2,101 @@
 """
 Daily Campaign Reporting Script
 Extracts campaign analytics from Supabase databases and writes to Google Sheets
+
+USAGE MODES:
+1. Single Day (Yesterday): main()
+2. Single Day (Specific): main(datetime(2025, 8, 23))
+3. Batch Range: batch_main("2025-08-15", "2025-08-23")
+
+The script will create separate worksheets (DD-MMM format) for each date processed.
+
+ENVIRONMENT VARIABLES REQUIRED:
+- GOOGLE_SERVICE_ACCOUNT_JSON: Complete service account JSON as string
+- REPORTING_DB_URL: PostgreSQL connection string for reporting database
+- CLIENTS_DB_URL: PostgreSQL connection string for clients database
 """
 
 import logging
 import psycopg2
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import gspread
 from google.oauth2.service_account import Credentials
 from collections import defaultdict
+import json
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ========== EMBEDDED CREDENTIALS AND CONFIGURATION ==========
+# ========== ENVIRONMENT VARIABLES AND CONFIGURATION ==========
 
-# Database connection strings
-REPORTING_DB_URL = "postgresql://postgres.auzoezucrrhrtmaucbbg:SB0dailyreporting@aws-1-us-east-2.pooler.supabase.com:6543/postgres"
-CLIENTS_DB_URL = "postgresql://postgres.onnbdclahsxoqdfgdsbm:clentsDB0pw@aws-1-ap-south-1.pooler.supabase.com:6543/postgres"
+def load_environment_variables():
+    """Load and validate required environment variables"""
+    logger.info("Loading environment variables...")
+    
+    # Load database URLs
+    reporting_db_url = os.getenv('REPORTING_DB_URL')
+    clients_db_url = os.getenv('CLIENTS_DB_URL')
+    
+    # Load Google service account JSON
+    google_service_account_json = os.getenv('GOOGLE_SERVICE_ACCOUNT_JSON')
+    
+    # Validate required environment variables
+    missing_vars = []
+    if not reporting_db_url:
+        missing_vars.append('REPORTING_DB_URL')
+    if not clients_db_url:
+        missing_vars.append('CLIENTS_DB_URL')
+    if not google_service_account_json:
+        missing_vars.append('GOOGLE_SERVICE_ACCOUNT_JSON')
+    
+    if missing_vars:
+        raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+    
+    # Parse Google service account JSON
+    try:
+        service_account_info = json.loads(google_service_account_json)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in GOOGLE_SERVICE_ACCOUNT_JSON: {e}")
+    
+    logger.info("All environment variables loaded successfully")
+    
+    return {
+        'reporting_db_url': reporting_db_url,
+        'clients_db_url': clients_db_url,
+        'service_account_info': service_account_info
+    }
 
-# Google Service Account credentials (embedded directly)
-# NOTE: Replace this with your actual service account JSON credentials
-service_account_info = {
-  "type": "service_account",
-  "project_id": "mythic-fire-420811",
-  "private_key_id": "a4e3ef79c3051cafa8fa224dac69bf9336060361",
-  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDiRKVIjU+eLfbi\nDHCkfI0O6toiRwoR0e+ynEyyCGxA8zN1SdmxMr6f2IMvjIQpQtWlgvdZf5XS2+Nm\nfJo4M0Wogl/nJhz31Y+Ku0KcPqJ5LsBWuTyB+KWGE2/briVNccZWmfhfEBDoBmbs\n19NC28qWlgVc68qZrcHJn3AHjaJ/HpFeJN1qMB8MR6JR/gXni1A1bJcC5OHhqgd0\nzM5P9cLY1VuqezhEWKWHermNd7uGHKnI3Zdmv/ERhAU1nhLAeemfT/5Rv8iH2g4X\nz9G5IXp65QNrGLCd4ggamGhLCErLRS7EdWhh++aVBpDHgUVjbaQ+YqCB4eWZeu1b\nsswxETOFAgMBAAECggEADbzmEyZfSebtCTMA/ipWGdcuXivq2Nj4ASPGb/3HwtbG\no6L+UxOraW2eI3DYOmAa3tUkOvxz2+JVZ3d+bpXwWgeWa+SkwshmPMxbV5IMT9LD\n7fq1CYglAU5kpCrUjCPxtfgxvBCFPO0x6m89M19AaOMGxCpIegsHy9Erc7id/909\nm90ML+x4LfjdQcHpszHA7FR3Tnh51Kqza64wdWD7av0cQ24RhRYy/5E6c2CbkRyw\n7VM7IpBeiN6R4Hdeg4FrjyG7nkKbFFTbOSDwwJK8r18uecOes7jkLaMfXBIKTx7M\nFIzmSjs1cK4kHKWD1NQLxqJgeIbvadhvlfA+1O5imQKBgQD26KLX8cqmuwsyhqUS\nvc+I18pYlIoLoXTyTTv4+4eF3nqZjVxo5gupJ9Mg2VKJLLdkizmTM6iREHdho3Tr\nML0uG8sEzU6wnPGx37/MDdRXveOMkZXJuqd2P/lWF7gFvphIZPIPBnPvY8dTfvHJ\nE9yxFsEiq+bwkzubUq3nG314+QKBgQDqmXN/4Kd49uZJRTotp22tcYrTzYnaUlZk\nfo6/4URR69xlYYPzOzZqE7DhmG26lsGFYhZ79B3MBTP8fKa1Vxfgf50YcTI1o8Q0\ne0MeSEWsEXCVRKhSMeEh5sL4lQaMRTRFs+Lgoe5rya/c6nBZIlyW38HYk+3N3O0e\nd4ncYdQd7QKBgQCNgo16SHkGECN9xM+tKx5b5plxJUjtG49EI+HgdICayATqJqu0\n70v1mf6WUBfOyNMfC/Bmnm/ZHF/flOg4t4lleMZlrSmRbZHUiVGKqM5vr0RQV0xK\n/vBlhIrpvdRZboAm1bwpwmAF7uDZyOLYhMqysEDnFzDX5vp9reg/kXDbOQKBgFnk\nYrVlR8a6FJOOyzQjK4uCLkfqQiA93Iy1Uc2Ea8FYNyNBsmXJEpii4uwOlD0i9xQ8\n+ZCVgbVjaQAeY2Ko9KU5QODUvwB+t/fEI3u/BbNhG1qW7EhShImQ+rR1pgSpn9X1\nj8GzSsBSj+h+jH4bBI9rPcPXKw/uz40VEOY5NiYhAoGAPMKrbR22knzNmAmYTM4/\n8yC9s0bKeRHsb4bXlX4+uvWYrnZpQYRRKttuf/8VlYoCoI6Bu8gNNIYQE1LNYzB1\nFYxgyb2xGMVLTc9gfgYYT758Zv5MjOcjTJtey5u28R5jFbEU0o8s6Bw+GVFcZ8rq\n2JEdTowimgk6GczNCZiXGOk=\n-----END PRIVATE KEY-----\n",
-  "client_email": "active-clients-stats-am@mythic-fire-420811.iam.gserviceaccount.com",
-  "client_id": "108943857688064451039",
-  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-  "token_uri": "https://oauth2.googleapis.com/token",
-  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/active-clients-stats-am%40mythic-fire-420811.iam.gserviceaccount.com",
-  "universe_domain": "googleapis.com"
-}
+# For local development only
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    logger.info("Loaded .env file for local development")
+except ImportError:
+    logger.info("python-dotenv not installed, using system environment variables")
+
+# Load environment variables at startup
+try:
+    env_config = load_environment_variables()
+    REPORTING_DB_URL = env_config['reporting_db_url']
+    CLIENTS_DB_URL = env_config['clients_db_url']
+    service_account_info = env_config['service_account_info']
+except Exception as e:
+    logger.error(f"Environment configuration error: {e}")
+    logger.error("Please ensure all required environment variables are set:")
+    logger.error("- REPORTING_DB_URL: PostgreSQL connection string for reporting database")
+    logger.error("- CLIENTS_DB_URL: PostgreSQL connection string for clients database") 
+    logger.error("- GOOGLE_SERVICE_ACCOUNT_JSON: Complete service account JSON as string")
+    raise
 
 # Account Manager to Google Sheet ID mapping
 account_manager_sheets = {
     "Carl": "1Fx82mA0GjvmdwXIsvgKf92p_W133dniP82OGr1LoXIU",
     "Gaius": "1wbz2evFpJwfPhC2uhqqUrg-_ybh2waqV9Y5P3UG-nzs",
-    "Ram Prakash": "15MJhaktorXvTwqEVZp8Om77ecEi1MSLMs1uFR0tv6iI",  # Updated to match DB
-    "Dhanraj": "1uAYJnh1Y5c8L8sflOcULgI1Hw8eEjchY3GSs9tgAI0U",  # Mapped to Omesh's sheet
-    "Benjie": "1ZEiwmSdFnlybhIBpi4lEh0Pe1AOZw087EXjFyU-fk1A"  # Can map to any available sheet
+    "Ram Prakash": "15MJhaktorXvTwqEVZp8Om77ecEi1MSLMs1uFR0tv6iI",
+    "Dhanraj": "1uAYJnh1Y5c8L8sflOcULgI1Hw8eEjchY3GSs9tgAI0U",
+    "Benjie": "1ZEiwmSdFnlybhIBpi4lEh0Pe1AOZw087EXjFyU-fk1A"
 }
 
 # Output column headers (must match exact order)
@@ -366,81 +419,6 @@ def group_campaigns_by_am(campaigns, client_mapping):
     
     return am_campaigns
 
-def format_campaign_data(campaigns, client_mapping, am_name):
-    """Format campaign data into required output format"""
-    logger.info(f"Formatting data for AM: {am_name}")
-    
-    formatted_rows = []
-    
-    for campaign in campaigns:
-        (campaign_date_key, campaign_id, parent_campaign_id, campaign_name, 
-         client_name, status, start_date, end_date, total_sent, 
-         new_leads_reached, replies_count, positive_reply, bounce_count) = campaign
-        
-        # Get client_id from mapping
-        client_id = client_mapping.get(am_name, {}).get(client_name, 0)
-        
-        # Map available data to output format
-        row_data = {
-            "client_name": client_name or "",
-            "id": campaign_id or 0,
-            "user_id": 0,  # Not available
-            "created_at": "",  # Not available
-            "status": status or "",
-            "name": campaign_name or "",
-            "start_date": start_date.strftime('%Y-%m-%d') if start_date else "",
-            "end_date": end_date.strftime('%Y-%m-%d') if end_date else "",
-            "sent_count": total_sent or 0,
-            "unique_sent_count": new_leads_reached or 0,
-            "open_count": 0,  # Not available
-            "unique_open_count": 0,  # Not available
-            "click_count": 0,  # Not available
-            "unique_click_count": 0,  # Not available
-            "reply_count": replies_count or 0,
-            "block_count": 0,  # Not available
-            "total_count": 0,  # Not available
-            "drafted_count": 0,  # Not available
-            "bounce_count": bounce_count or 0,
-            "unsubscribed_count": 0,  # Not available
-            "client_email": "",  # Not available
-            "ln_connection_req_pending_count": 0,  # Not available
-            "ln_connection_req_accepted_count": 0,  # Not available
-            "ln_connection_req_skipped_sent_msg_count": 0,  # Not available
-            "positive_reply_count": positive_reply or 0
-        }
-        
-        # Convert to ordered list matching OUTPUT_COLUMNS
-        row = [row_data[col] for col in OUTPUT_COLUMNS]
-        formatted_rows.append(row)
-    
-    logger.info(f"Formatted {len(formatted_rows)} rows for {am_name}")
-    return formatted_rows
-
-def calculate_summary(formatted_rows):
-    """Calculate summary totals"""
-    if not formatted_rows:
-        return [0] * len(OUTPUT_COLUMNS)
-    
-    # Initialize summary with zeros
-    summary = [0] * len(OUTPUT_COLUMNS)
-    
-    # Set summary row identifiers
-    summary[0] = "TOTAL"  # client_name
-    summary[4] = "SUMMARY"  # status
-    summary[5] = "Summary Row"  # name
-    
-    # Sum numerical columns
-    numerical_indices = [1, 2, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 24]
-    
-    for row in formatted_rows:
-        for idx in numerical_indices:
-            try:
-                summary[idx] += float(row[idx]) if row[idx] else 0
-            except (ValueError, TypeError):
-                continue
-    
-    return summary
-
 # ========== GOOGLE SHEETS FUNCTIONS ==========
 
 def setup_google_sheets():
@@ -513,25 +491,29 @@ def write_to_sheet(gc, am_name, sheet_id, formatted_rows, report_date):
 
 # ========== MAIN EXECUTION ==========
 
-def main():
+def main(target_date=None):
     """Main execution function"""
     logger.info("Starting daily campaign reporting...")
     
     try:
-        # Calculate yesterday's date (just date, no time)
-        yesterday = datetime.utcnow().date() - timedelta(days=1)
-        yesterday = datetime.combine(yesterday, datetime.min.time())  # Convert back to datetime
-        logger.info(f"Generating report for: {yesterday.strftime('%Y-%m-%d')}")
+        # Use provided date or default to yesterday
+        if target_date:
+            report_date = target_date
+        else:
+            # Calculate yesterday's date (just date, no time)
+            yesterday = datetime.utcnow().date() - timedelta(days=1)
+            report_date = datetime.combine(yesterday, datetime.min.time())  # Convert back to datetime
         
-        # First, discover available columns (for debugging)
-        discover_campaign_columns()
+        logger.info(f"Generating report for: {report_date.strftime('%Y-%m-%d')}")
         
-        # Check what dates are available in the database
-        check_available_dates()
+        # First, discover available columns (for debugging) - only on first run
+        if not target_date:
+            discover_campaign_columns()
+            check_available_dates()
         
         # Fetch data from databases
         clients = fetch_clients()
-        campaigns = fetch_campaigns(yesterday)
+        campaigns = fetch_campaigns(report_date)
         
         # Build mappings
         client_mapping = build_client_mapping(clients)
@@ -550,7 +532,7 @@ def main():
                 
                 # Write to Google Sheet
                 sheet_id = account_manager_sheets[am_name]
-                write_to_sheet(gc, am_name, sheet_id, formatted_rows, yesterday)
+                write_to_sheet(gc, am_name, sheet_id, formatted_rows, report_date)
                 
             else:
                 logger.warning(f"No Google Sheet configured for AM: {am_name}")
@@ -559,13 +541,117 @@ def main():
         for am_name, sheet_id in account_manager_sheets.items():
             if am_name not in am_campaigns:
                 logger.info(f"No campaigns found for {am_name}, creating empty sheet")
-                write_to_sheet(gc, am_name, sheet_id, [], yesterday)
+                write_to_sheet(gc, am_name, sheet_id, [], report_date)
         
-        logger.info("Daily reporting completed successfully!")
+        logger.info(f"Daily reporting completed successfully for {report_date.strftime('%Y-%m-%d')}!")
         
     except Exception as e:
-        logger.error(f"Error in main execution: {e}")
+        logger.error(f"Error in main execution for {report_date.strftime('%Y-%m-%d') if 'report_date' in locals() else 'unknown date'}: {e}")
+        raise
+
+def batch_main(batch_start_date, batch_end_date):
+    """Run main script for a batch of dates"""
+    logger.info(f"Starting batch campaign reporting from {batch_start_date} to {batch_end_date}")
+    
+    try:
+        # Parse start and end dates
+        if isinstance(batch_start_date, str):
+            start_date = datetime.strptime(batch_start_date, '%Y-%m-%d').date()
+        else:
+            start_date = batch_start_date
+            
+        if isinstance(batch_end_date, str):
+            end_date = datetime.strptime(batch_end_date, '%Y-%m-%d').date()
+        else:
+            end_date = batch_end_date
+        
+        # Validate date range
+        if start_date > end_date:
+            raise ValueError("batch_start_date must be before or equal to batch_end_date")
+        
+        # Run discovery functions once at the beginning
+        logger.info("Running initial discovery functions...")
+        discover_campaign_columns()
+        check_available_dates()
+        
+        # Generate list of dates in the range
+        current_date = start_date
+        processed_dates = []
+        failed_dates = []
+        
+        while current_date <= end_date:
+            try:
+                # Convert to datetime for main function
+                target_datetime = datetime.combine(current_date, datetime.min.time())
+                
+                logger.info(f"\n{'='*60}")
+                logger.info(f"Processing batch date: {current_date.strftime('%Y-%m-%d')} ({current_date.strftime('%d-%b')})")
+                logger.info(f"{'='*60}")
+                
+                # Run main function for this specific date
+                main(target_datetime)
+                
+                processed_dates.append(current_date.strftime('%Y-%m-%d'))
+                logger.info(f"Successfully processed {current_date.strftime('%Y-%m-%d')}")
+                
+            except Exception as e:
+                failed_dates.append(current_date.strftime('%Y-%m-%d'))
+                logger.error(f"Failed to process {current_date.strftime('%Y-%m-%d')}: {e}")
+                # Continue with next date instead of stopping
+            
+            # Move to next date
+            current_date += timedelta(days=1)
+        
+        # Summary report
+        logger.info(f"\n{'='*60}")
+        logger.info("BATCH PROCESSING SUMMARY")
+        logger.info(f"{'='*60}")
+        logger.info(f"Date range: {batch_start_date} to {batch_end_date}")
+        logger.info(f"Successfully processed: {len(processed_dates)} dates")
+        logger.info(f"Failed: {len(failed_dates)} dates")
+        
+        if processed_dates:
+            logger.info(f"Successful dates: {', '.join(processed_dates)}")
+        
+        if failed_dates:
+            logger.info(f"Failed dates: {', '.join(failed_dates)}")
+        
+        logger.info("Batch campaign reporting completed!")
+        
+        return {
+            'processed_dates': processed_dates,
+            'failed_dates': failed_dates,
+            'total_processed': len(processed_dates),
+            'total_failed': len(failed_dates)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in batch execution: {e}")
         raise
 
 if __name__ == "__main__":
+    # Choose your execution mode:
+    
+    # MODE 1: Run for yesterday (default single day execution)
     main()
+    
+    # MODE 2: Run for a specific single date
+    # from datetime import datetime
+    # specific_date = datetime(2025, 8, 23)  # August 23, 2025
+    # main(specific_date)
+    
+    # MODE 3: Run batch processing for a date range
+    # Uncomment the lines below and comment out main() above to use batch mode
+    # batch_result = batch_main(
+    #     batch_start_date="2025-08-15",  # Start date (YYYY-MM-DD)
+    #     batch_end_date="2025-08-23"     # End date (YYYY-MM-DD)
+    # )
+    # print(f"Batch processing completed: {batch_result}")
+    
+    # MODE 4: Run batch processing with datetime objects
+    # from datetime import date
+    # batch_result = batch_main(
+    #     batch_start_date=date(2025, 8, 15),
+    #     batch_end_date=date(2025, 8, 23)
+    # )
+    # print(f"Batch processing completed: {batch_result}")
