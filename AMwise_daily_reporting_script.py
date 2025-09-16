@@ -634,7 +634,7 @@ if __name__ == "__main__":
     # Choose your execution mode:
     
     # MODE 1: Run for yesterday (default single day execution)
-    # main()
+    main()
     
     # MODE 2: Run for a specific single date
     # from datetime import datetime
@@ -650,9 +650,9 @@ if __name__ == "__main__":
     # print(f"Batch processing completed: {batch_result}")
     
     # MODE 4: Run batch processing with datetime objects
-    from datetime import date
-    batch_result = batch_main(
-        batch_start_date=date(2025, 9, 14),
-        batch_end_date=date(2025, 9, 15)
-    )
-    print(f"Batch processing completed: {batch_result}")
+    # from datetime import date
+    # batch_result = batch_main(
+    #     batch_start_date=date(2025, 9, 14),
+    #     batch_end_date=date(2025, 9, 15)
+    # )
+    # print(f"Batch processing completed: {batch_result}")
