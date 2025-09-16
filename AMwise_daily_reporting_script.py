@@ -637,19 +637,19 @@ if __name__ == "__main__":
     # main()
     
     # MODE 2: Run for a specific single date
-    from datetime import datetime
-    specific_date = datetime(2025, 8, 23)  # August 23, 2025
-    main(specific_date)
+    # from datetime import datetime
+    # specific_date = datetime(2025, 8, 23)  # August 23, 2025
+    # main(specific_date)
     
-    MODE 3: Run batch processing for a date range
-    Uncomment the lines below and comment out main() above to use batch mode
-    batch_result = batch_main(
-        batch_start_date="2025-08-15",  # Start date (YYYY-MM-DD)
-        batch_end_date="2025-08-23"     # End date (YYYY-MM-DD)
-    )
-    print(f"Batch processing completed: {batch_result}")
+    # MODE 3: Run batch processing for a date range
+    # Uncomment the lines below and comment out main() above to use batch mode
+    # batch_result = batch_main(
+    #     batch_start_date="2025-08-15",  # Start date (YYYY-MM-DD)
+    #     batch_end_date="2025-08-23"     # End date (YYYY-MM-DD)
+    # )
+    # print(f"Batch processing completed: {batch_result}")
     
-    MODE 4: Run batch processing with datetime objects
+    # MODE 4: Run batch processing with datetime objects
     from datetime import date
     batch_result = batch_main(
         batch_start_date=date(2025, 9, 14),
