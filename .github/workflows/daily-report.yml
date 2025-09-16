@@ -25,4 +25,8 @@ jobs:
         pip install psycopg2-binary gspread google-auth
 
     - name: Run reporting script
+      env:
+        REPORTING_DB_URL: ${{ secrets.REPORTING_DB_URL }}
+        CLIENTS_DB_URL: ${{ secrets.CLIENTS_DB_URL }}
+        GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
       run: python AMwise_daily_reporting_script.py
