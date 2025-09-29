@@ -634,12 +634,12 @@ if __name__ == "__main__":
     # Choose your execution mode:
     
     # MODE 1: Run for yesterday (default single day execution)
-    # main()
+    main()
     
     # MODE 2: Run for a specific single date
-    from datetime import datetime
-    specific_date = datetime(2025, 9, 28)  # August 23, 2025
-    main(specific_date)
+    # from datetime import datetime
+    # specific_date = datetime(2025, 9, 28)  # August 23, 2025
+    # main(specific_date)
     
     # MODE 3: Run batch processing for a date range
     # Uncomment the lines below and comment out main() above to use batch mode
